@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AgroSentinel – Diagnostic agricole</title>
+<meta name="theme-color" content="#115e59">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="/modern.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="/modern.js" defer></script>
+<style>@keyframes scan{0%{top:0}50%{top:calc(100% - 4px)}100%{top:0}}.scanline{position:absolute;left:0;right:0;height:4px;background:linear-gradient(90deg,transparent,#5eead4,transparent);box-shadow:0 0 18px 4px rgba(94,234,212,.8);animation:scan 1.6s ease-in-out infinite}#map{height:420px;border-radius:18px;z-index:0}</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div id="root"></div>
+<script>
+const { useState, useEffect, useRef } = React;
+const html = htm.bind(React.createElement);
+let TOKEN = localStorage.getItem('t');
+
+async function api(u, o = {}) {
+  const r = await fetch('/api' + u, { ...o, headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}) } });
+  let j = null; try { j = await r.json(); } catch (e) {}
+  if (!r.ok) { const e = new Error((j && j.message) || 'Erreur ' + r.status); e.status = r.status; throw e; }
+  return j;
+}
+const post = (u, b) => api(u, { method: 'POST', body: JSON.stringify(b || {}) });
+const fd = s => s ? new Date(s.replace(' ', 'T')).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) : '';
+const fmt = n => Math.round(n).toLocaleString('fr-FR');
+const B = 'px-4 py-2.5 rounded-xl font-medium transition ';
+const P = B + 'bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-40';
+const G = B + 'border border-teal-700 text-teal-800 hover:bg-teal-50';
+const IN = 'w-full border border-slate-300 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-teal-600';
+const CARD = 'bg-white rounded-2xl shadow-sm border border-slate-200 p-5';
+const RISK = { 'Élevé': 'bg-red-100 text-red-800', 'Moyen': 'bg-amber-100 text-amber-800', 'Faible': 'bg-green-100 text-green-800' };
+const Risk = ({ r }) => html`<span class=${'px-2 py-0.5 rounded-full text-xs font-medium ' + (RISK[r] || '')}>Risque ${r}</span>`;
+const Msg = ({ m, ok }) => m ? html`<p class=${'rounded-lg px-3 py-2 text-sm my-2 ' + (ok ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-700')}>${m}</p>` : null;
+const Title = ({ t, s }) => html`<div class="mb-5"><h1 class="text-2xl md:text-3xl font-bold">${t}</h1>${s && html`<p class="text-slate-600">${s}</p>`}</div>`;
+const Need = ({ go }) => html`<div class=${CARD + ' max-w-md mx-auto mt-10 text-center'}><p class="mb-3">Connectez-vous pour utiliser cette fonction.</p><button class=${P} onClick=${() => go('login')}>Connexion</button></div>`;
+const Demo = ({ children }) => html`<p class="bg-amber-50 border border-amber-200 text-amber-900 text-sm rounded-xl px-3 py-2 my-3">🧪 <b>Mode démonstration.</b> ${children}</p>`;
+
+const SERVICES = [
+  ['diag', '📷', 'Diagnostic par photo', 'Cacao, mangue, tomate : maladie probable et conseils.'],
+  ['weather', '⛅', 'Météo agricole', 'Température, humidité et risques de maladies.'],
+  ['map', '🗺️', 'Carte des diagnostics', 'Vos analyses géolocalisées (position facultative).'],
+  ['roi', '🧮', 'Calculateur de scénario', 'Estimez pertes et valeur préservée.'],
+  ['market', '🛒', 'Marché', 'Publiez ou achetez des productions.'],
+  ['logis', '🚚', 'Groupage logistique', 'Volumes récoltés par zone.'],
+  ['dash', '📊', 'Tableau de bord national', 'Indicateurs pour les décideurs (admin).']
+];
+
+function Nav({ user, view, go, logout }) {
+  const L = (v, t) => html`<button onClick=${() => go(v)} class=${'px-3 py-2 rounded-lg text-sm whitespace-nowrap ' + (view === v ? 'bg-white/20' : 'hover:bg-white/10')}>${t}</button>`;
+  return html`<header class="bg-teal-800 text-white sticky top-0 z-10"><div class="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center gap-1">
+    <button onClick=${() => go('home')} class="font-bold text-lg mr-auto">🌿 AgroSentinel</button>
+    ${L('home', 'Accueil')}${L('diag', 'Diagnostic')}${L('weather', 'Météo')}${L('map', 'Carte')}${L('roi', 'Scénario')}${L('market', 'Marché')}${L('logis', 'Groupage')}
+    ${user && user.role === 'admin' && L('dash', 'Tableau de bord')}
+    ${user ? html`<button onClick=${logout} class="px-3 py-2 text-sm rounded-lg bg-white/10">Déconnexion</button>` : L('login', 'Connexion')}
+  </div></header>`;
+}
+
+function Home({ go }) {
+  return html`<div>
+    <section class="bg-gradient-to-br from-teal-800 to-teal-600 text-white"><div class="max-w-6xl mx-auto px-4 py-14 text-center">
+      <h1 class="text-3xl md:text-5xl font-extrabold leading-tight">Protégez vos cultures,<br/>décidez avec confiance.</h1>
+      <p class="mt-4 text-teal-50 text-lg max-w-2xl mx-auto">Diagnostic de maladies, météo agricole et outils de commercialisation pour les producteurs de cacao, mangue et tomate.</p>
+      <div class="flex justify-center gap-3 mt-6 flex-wrap">
+        <div class="bg-white/15 rounded-2xl px-6 py-3"><p class="text-3xl font-bold">3</p><p class="text-xs">cultures</p></div>
+        <div class="bg-white/15 rounded-2xl px-6 py-3"><p class="text-3xl font-bold">22</p><p class="text-xs">classes de maladies</p></div>
+      </div>
+      <button onClick=${() => go('diag')} class="mt-8 bg-white text-teal-800 font-semibold px-8 py-3.5 rounded-2xl shadow">Lancer un diagnostic</button>
+    </div></section>
+    <section class="max-w-6xl mx-auto px-4 py-10"><h2 class="text-2xl font-bold mb-5">Nos services</h2>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">${SERVICES.map(([k, i, t, d]) => html`<button key=${k} onClick=${() => go(k)} class=${CARD + ' text-left'}><div class="text-3xl">${i}</div><h3 class="font-semibold text-lg mt-2 text-teal-800">${t}</h3><p class="text-sm text-slate-600 mt-1">${d}</p></button>`)}</div>
+    </section>
+    <footer class="text-center text-xs text-slate-500 pb-8 px-4">Version de démonstration · données fictives · Consultez toujours un conseiller agricole agréé (ANADER) avant tout traitement.</footer>
+  </div>`;
+}
+
+function Auth({ onAuth }) {
+  const [mode, setMode] = useState('login'); const [f, setF] = useState({ name: '', email: '', password: '' });
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false);
+  const set = k => e => setF({ ...f, [k]: e.target.value });
+  const submit = async e => { e.preventDefault(); setErr(''); setBusy(true); try { onAuth(await post(mode === 'login' ? '/auth/login' : '/auth/register', f)); } catch (x) { setErr(x.message); } finally { setBusy(false); } };
+  const demo = [['Producteur', 'producteur@agrosentinel.ci'], ['Admin', 'admin@agrosentinel.ci']];
+  return html`<div class="max-w-md mx-auto px-4 py-10"><div class=${CARD}><h2 class="text-2xl font-bold mb-3">${mode === 'login' ? 'Connexion' : 'Créer un compte'}</h2>
+    <form onSubmit=${submit} class="space-y-3">
+      ${mode === 'register' && html`<input class=${IN} placeholder="Nom complet" value=${f.name} onInput=${set('name')} required />`}
+      <input class=${IN} type="email" placeholder="E-mail" value=${f.email} onInput=${set('email')} required />
+      <input class=${IN} type="password" placeholder=${mode === 'register' ? 'Mot de passe (8 caractères min.)' : 'Mot de passe'} value=${f.password} onInput=${set('password')} required />
+      <${Msg} m=${err} /><button disabled=${busy} class=${P + ' w-full'}>${busy ? '...' : mode === 'login' ? 'Se connecter' : "S'inscrire"}</button></form>
+    <button class="text-sm text-teal-800 underline mt-4" onClick=${() => { setMode(mode === 'login' ? 'register' : 'login'); setErr(''); }}>${mode === 'login' ? "Pas de compte ? S'inscrire" : 'Déjà inscrit ? Se connecter'}</button>
+    ${mode === 'login' && html`<div class="mt-5 pt-4 border-t border-dashed text-xs text-slate-500"><p class="mb-2">Comptes de test (mot de passe : Demo@2026)</p><div class="flex gap-2">${demo.map(([n, e]) => html`<button type="button" key=${e} class="px-3 py-1.5 rounded-lg bg-slate-100" onClick=${() => setF({ ...f, email: e, password: 'Demo@2026' })}>${n}</button>`)}</div></div>`}
+  </div></div>`;
+}
+
+function Diag({ user, go }) {
+  const [cult, setCult] = useState('cacao'); const [cl, setCl] = useState(null);
+  const [img, setImg] = useState(null); const [busy, setBusy] = useState(false);
+  const [geo, setGeo] = useState(false); const [res, setRes] = useState(null);
+  const [hist, setHist] = useState([]); const [err, setErr] = useState('');
+  const loadH = () => api('/diagnostics/mine').then(setHist).catch(() => {});
+  useEffect(() => { api('/cultures').then(setCl); if (user) loadH(); }, []);
+  if (!user) return html`<${Need} go=${go} />`;
+  const pick = e => { const f = e.target.files[0]; if (f) { setImg(URL.createObjectURL(f)); setRes(null); setErr(''); } };
+  const analyse = async () => {
+    setBusy(true); setErr(''); setRes(null);
+    try {
+      let pos = {};
+      if (geo && navigator.geolocation) pos = await new Promise(r => navigator.geolocation.getCurrentPosition(p => r({ lat: p.coords.latitude, lng: p.coords.longitude }), () => r({}), { timeout: 6000 }));
+      await new Promise(r => setTimeout(r, 1800)); // simulation du temps d'analyse
+      const labels = cl[cult]; const pickd = labels[Math.floor(Math.random() * labels.length)];
+      setRes(await post('/diagnostics', { culture: cult, label: pickd.raw, confidence: +(0.55 + Math.random() * 0.42).toFixed(3), ...pos }));
+      loadH();
+    } catch (x) { setErr(x.message); } finally { setBusy(false); }
+  };
+  const speak = t => { if (!window.speechSynthesis) return; speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(t.replace(/[^\p{L}\p{N}\s.,:'’-]/gu, ' ')); u.lang = 'fr-FR'; speechSynthesis.speak(u); };
+  const C = [['cacao', '🍫 Cacao'], ['mangue', '🥭 Mangue'], ['tomate', '🍅 Tomate']];
+  return html`<div class="max-w-3xl mx-auto px-4 py-8"><${Title} t="Diagnostic par photo" s="Choisissez la culture, prenez une photo de la feuille ou du fruit atteint." />
+    <${Demo}>Le modèle d'IA n'est pas encore branché : la maladie affichée est tirée au hasard parmi les classes réelles de la culture. Les fiches de conseils, elles, sont réelles.<//>
+    <div class="flex gap-2 mb-4 flex-wrap">${C.map(([k, t]) => html`<button key=${k} onClick=${() => { setCult(k); setRes(null); }} class=${'px-4 py-2 rounded-xl text-sm ' + (cult === k ? 'bg-teal-700 text-white' : 'bg-white border border-slate-200')}>${t}</button>`)}</div>
+    <div class=${CARD}>
+      <label class="block border-2 border-dashed border-slate-300 rounded-2xl p-6 text-center cursor-pointer hover:bg-slate-50"><input type="file" accept="image/*" capture="environment" class="hidden" onChange=${pick} />
+        ${img ? html`<div class="relative inline-block overflow-hidden rounded-xl"><img src=${img} class="max-h-72 rounded-xl" />${busy && html`<div class="scanline"></div>`}</div>` : html`<div><div class="text-4xl">📷</div><p class="mt-2 text-slate-600">Touchez pour prendre ou choisir une photo</p></div>`}</label>
+      <label class="flex items-center gap-2 text-sm mt-4"><input type="checkbox" checked=${geo} onChange=${e => setGeo(e.target.checked)} /> Enregistrer ma position approximative sur la carte (facultatif)</label>
+      <${Msg} m=${err} /><button disabled=${!img || busy || !cl} onClick=${analyse} class=${P + ' w-full mt-4'}>${busy ? 'Analyse en cours...' : "Lancer l'analyse"}</button>
+    </div>
+    ${res && html`<div class=${CARD + ' mt-5'}>
+      <div class="flex justify-between items-start gap-2 flex-wrap"><h2 class="text-xl font-bold">${res.healthy ? '✅ ' : '⚠️ '}${res.label}</h2><${Risk} r=${res.risk_level} /></div>
+      <p class="text-sm text-slate-500 mt-2">Confiance (simulée) : <b>${Math.round(res.confidence * 100)} %</b></p>
+      <div class="h-2.5 bg-slate-100 rounded-full mt-1"><div class="h-2.5 bg-teal-600 rounded-full" style=${{ width: res.confidence * 100 + '%' }}></div></div>
+      <p class="whitespace-pre-line mt-4 text-sm leading-relaxed">${res.recommendation}</p>
+      <button class=${G + ' mt-4 text-sm'} onClick=${() => speak(res.recommendation)}>🔊 Écouter les conseils</button></div>`}
+    ${hist.length > 0 && html`<h2 class="text-xl font-bold mt-8 mb-3">Historique (30 derniers jours)</h2><div class="space-y-3">${hist.slice(0, 8).map(h => html`<div key=${h.id} class=${CARD + ' flex justify-between items-center gap-2'}><div><p class="font-semibold">${h.label}</p><p class="text-sm text-slate-500 capitalize">${h.culture} · ${fd(h.created_at)}${h.lat ? ' · 📍' : ''}</p></div><${Risk} r=${h.risk_level} /></div>`)}</div>`}
+  </div>`;
+}
+
+function Weather() {
+  const [pos, setPos] = useState({ lat: 5.36, lng: -4.01, name: 'Abidjan' }); const [w, setW] = useState(null); const [off, setOff] = useState(false);
+  useEffect(() => {
+    setW(null); setOff(false);
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${pos.lat}&longitude=${pos.lng}&current=temperature_2m,relative_humidity_2m,weather_code&daily=temperature_2m_max,precipitation_sum&forecast_days=3&timezone=auto`)
+      .then(r => r.json()).then(j => setW(j)).catch(() => setOff(true));
+  }, [pos]);
+  const here = () => navigator.geolocation && navigator.geolocation.getCurrentPosition(p => setPos({ lat: +p.coords.latitude.toFixed(2), lng: +p.coords.longitude.toFixed(2), name: 'Ma position' }));
+  const cond = c => c === 0 ? 'Ciel dégagé' : c <= 3 ? 'Partiellement nuageux' : c <= 67 ? 'Pluie' : 'Variable';
+  const t = w && w.current ? w.current.temperature_2m : 0, h = w && w.current ? w.current.relative_humidity_2m : 0;
+  const mil = h > 75 && t > 15 && t < 25 ? 80 : 20, rot = h > 80 ? 90 : 30;
+  const Bar = (l, v) => html`<div class="mb-3"><div class="flex justify-between text-sm"><span>${l}</span><b>${v} %</b></div><div class="h-2.5 bg-slate-100 rounded-full"><div class=${'h-2.5 rounded-full ' + (v > 60 ? 'bg-red-500' : 'bg-teal-600')} style=${{ width: v + '%' }}></div></div></div>`;
+  return html`<div class="max-w-3xl mx-auto px-4 py-8"><${Title} t="Météo agricole" s=${'Lieu : ' + pos.name} />
+    <button class=${G + ' mb-4 text-sm'} onClick=${here}>📍 Utiliser ma position</button>
+    ${off && html`<${Msg} m="Météo indisponible (hors connexion). Réessayez plus tard." />`}
+    ${!w && !off && html`<p class="text-slate-500">Chargement...</p>`}
+    ${w && w.current && html`<div><div class=${CARD}><p class="text-5xl font-bold text-teal-800">${Math.round(t)}°C</p><p class="text-slate-600 mt-1">${cond(w.current.weather_code)} · humidité ${h} %</p></div>
+      <div class=${CARD + ' mt-4'}><h3 class="font-semibold mb-3">Risques de maladies (indice indicatif)</h3>${Bar('Mildiou (tomate)', mil)}${Bar('Pourriture brune (cacao)', rot)}<p class="text-xs text-slate-500">Règle simple basée sur la température et l'humidité, à titre d'alerte seulement.</p></div>
+      <div class="grid grid-cols-3 gap-3 mt-4">${w.daily.time.map((d, i) => html`<div key=${d} class=${CARD + ' text-center'}><p class="text-xs text-slate-500">${fd(d)}</p><p class="text-xl font-bold">${Math.round(w.daily.temperature_2m_max[i])}°</p><p class="text-xs text-teal-700">💧 ${w.daily.precipitation_sum[i]} mm</p></div>`)}</div></div>`}
+  </div>`;
+}
+
+function MapView({ user, go }) {
+  const el = useRef(null); const [pts, setPts] = useState(null);
+  useEffect(() => { if (user) api('/diagnostics/map').then(setPts).catch(() => setPts([])); }, []);
+  useEffect(() => {
+    if (!pts || !el.current) return;
+    const m = L.map(el.current).setView([7.6, -5.5], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(m);
+    const col = { 'Élevé': '#dc2626', 'Moyen': '#f59e0b', 'Faible': '#16a34a' };
+    pts.forEach(p => L.circleMarker([p.lat, p.lng], { radius: 9, color: '#fff', weight: 2, fillColor: col[p.risk_level], fillOpacity: .9 }).addTo(m).bindPopup(`<b>${p.label}</b><br>${p.culture} · risque ${p.risk_level}`));
+    return () => m.remove();
+  }, [pts]);
+  if (!user) return html`<${Need} go=${go} />`;
+  return html`<div class="max-w-5xl mx-auto px-4 py-8"><${Title} t="Carte des diagnostics" s=${user.role === 'admin' ? 'Vue d\'ensemble de tous les producteurs (positions arrondies).' : 'Vos diagnostics géolocalisés.'} />
+    ${!pts && html`<p class="text-slate-500">Chargement...</p>`}${pts && !pts.length && html`<p class="text-slate-500 mb-3">Aucun diagnostic géolocalisé : cochez « enregistrer ma position » lors d'un diagnostic.</p>`}
+    <div ref=${el} id="map"></div><div class="flex gap-4 text-xs mt-3"><span>🔴 Risque élevé</span><span>🟠 Moyen</span><span>🟢 Faible</span></div></div>`;
+}
+
+function Roi() {
+  const Y = { Cacao: 550, 'Maïs': 2000, Tomate: 15000, Anacarde: 800 };
+  const [crop, setCrop] = useState('Cacao'); const [s, setS] = useState(''); const [p, setP] = useState('');
+  const n = v => parseFloat(String(v).replace(',', '.')) || 0;
+  const loss = n(s) * Y[crop] * n(p) * 0.35, gain = loss * 0.9;
+  return html`<div class="max-w-xl mx-auto px-4 py-8"><${Title} t="Calculateur de scénario" s="Estimez l'impact d'une maladie sur votre parcelle." />
+    <div class=${CARD}><div class="flex flex-wrap gap-2 mb-4">${Object.keys(Y).map(k => html`<button key=${k} onClick=${() => setCrop(k)} class=${'px-4 py-2 rounded-xl text-sm ' + (crop === k ? 'bg-teal-700 text-white' : 'bg-slate-100')}>${k}</button>`)}</div>
+      <label class="block text-sm mb-3">Surface (hectares)<input class=${IN + ' mt-1'} inputmode="decimal" placeholder="Ex : 2,5" value=${s} onInput=${e => setS(e.target.value)} /></label>
+      <label class="block text-sm">Prix du marché (FCFA/kg)<input class=${IN + ' mt-1'} inputmode="decimal" placeholder="Ex : 1500" value=${p} onInput=${e => setP(e.target.value)} /></label></div>
+    <div class=${CARD + ' mt-4'}><p class="text-xs text-slate-500">ESTIMATION DE PERTE (SCÉNARIO)</p><p class="text-3xl font-bold text-red-600">${fmt(loss)} FCFA</p></div>
+    <div class=${CARD + ' mt-4'}><p class="text-xs text-slate-500">VALEUR POTENTIELLEMENT PRÉSERVÉE</p><p class="text-3xl font-bold text-green-700">${fmt(gain)} FCFA</p></div>
+    <p class="text-xs text-slate-500 mt-3">Rendements et hypothèses de démonstration, à remplacer par des données vérifiées. Ce n'est pas une prévision financière.</p></div>`;
+}
+
+function Market({ user, go }) {
+  const [list, setList] = useState(null); const [f, setF] = useState({ product: '', quantity: '', location: '', price: '' });
+  const [msg, setMsg] = useState(''); const [ok, setOk] = useState(false);
+  const load = () => api('/offers').then(setList);
+  useEffect(() => { load(); }, []);
+  const run = async fn => { try { const j = await fn(); setMsg(j.message); setOk(true); load(); } catch (x) { setMsg(x.message); setOk(false); if (x.status === 401) go('login'); } };
+  const set = k => e => setF({ ...f, [k]: e.target.value });
+  return html`<div class="max-w-4xl mx-auto px-4 py-8"><${Title} t="Marché" s="Offres des producteurs." /><${Demo}>Aucun paiement réel : l'achat est simulé.<//><${Msg} m=${msg} ok=${ok} />
+    ${!list && html`<p class="text-slate-500">Chargement...</p>`}
+    <div class="grid sm:grid-cols-2 gap-4">${(list || []).map(o => html`<div key=${o.id} class=${CARD}><div class="flex justify-between"><h3 class="font-semibold text-lg">${o.product}</h3>${o.sold ? html`<span class="text-xs bg-slate-200 rounded-full px-2 py-0.5 h-fit">Vendu</span>` : null}</div>
+      <p class="text-sm text-slate-600">${o.quantity} · ${o.location}</p><p class="text-xl font-bold text-teal-800 mt-1">${fmt(o.price)} FCFA/kg</p><p class="text-xs text-slate-400">Vendeur : ${o.seller}</p>
+      ${!o.sold && (!user || user.name !== o.seller) && html`<button class=${P + ' w-full mt-3 text-sm'} onClick=${() => run(() => post('/offers/' + o.id + '/buy'))}>Acheter (simulation)</button>`}</div>`)}</div>
+    ${user && html`<form class=${CARD + ' mt-6 space-y-3'} onSubmit=${e => { e.preventDefault(); run(async () => { const j = await post('/offers', { ...f, price: +f.price }); setF({ product: '', quantity: '', location: '', price: '' }); return j; }); }}>
+      <h3 class="font-semibold">Publier une offre</h3><div class="grid grid-cols-2 gap-2">
+      <input class=${IN} placeholder="Produit" value=${f.product} onInput=${set('product')} required /><input class=${IN} placeholder="Quantité (ex : 2 T)" value=${f.quantity} onInput=${set('quantity')} required />
+      <input class=${IN} placeholder="Localité" value=${f.location} onInput=${set('location')} required /><input class=${IN} type="number" min="1" placeholder="Prix FCFA/kg" value=${f.price} onInput=${set('price')} required /></div>
+      <button class=${P}>Publier</button></form>`}
+  </div>`;
+}
+
+function Logis({ user, go }) {
+  const [z, setZ] = useState(null); const [open, setOpen] = useState(null); const [t, setT] = useState(''); const [msg, setMsg] = useState(''); const [ok, setOk] = useState(false);
+  const load = () => api('/zones').then(setZ); useEffect(() => { load(); }, []);
+  const add = async id => { try { const j = await post(`/zones/${id}/harvest`, { tonnes: parseFloat(t.replace(',', '.')) }); setMsg(j.message); setOk(true); setOpen(null); setT(''); load(); } catch (x) { setMsg(x.message); setOk(false); if (x.status === 401) go('login'); } };
+  const max = z ? Math.max(1, ...z.map(x => +x.volume_t)) : 1;
+  return html`<div class="max-w-3xl mx-auto px-4 py-8"><${Title} t="Groupage logistique" s="Regroupez les récoltes par zone pour optimiser le transport." /><${Msg} m=${msg} ok=${ok} />
+    ${!z && html`<p class="text-slate-500">Chargement...</p>`}
+    <div class="space-y-3">${(z || []).map(x => html`<div key=${x.id} class=${CARD}><div class="flex justify-between items-center"><div><p class="font-semibold">${x.name}</p><p class="text-2xl font-bold text-teal-800">${x.volume_t} T</p></div>
+      <button class=${G + ' text-sm'} onClick=${() => { if (!user) return go('login'); setOpen(open === x.id ? null : x.id); }}>+ Déclarer une récolte</button></div>
+      <div class="h-2.5 bg-slate-100 rounded-full mt-3"><div class="h-2.5 bg-teal-600 rounded-full" style=${{ width: (x.volume_t / max * 100) + '%' }}></div></div>
+      ${open === x.id && html`<div class="flex gap-2 mt-3"><input class=${IN} inputmode="decimal" placeholder="Tonnage (ex : 1,5)" value=${t} onInput=${e => setT(e.target.value)} /><button class=${P} onClick=${() => add(x.id)}>Ajouter</button></div>`}</div>`)}</div></div>`;
+}
+
+function Dash() {
+  const [d, setD] = useState(null);
+  useEffect(() => { api('/dashboard').then(setD).catch(() => {}); }, []);
+  if (!d) return html`<p class="p-8 text-slate-500">Chargement...</p>`;
+  const K = [['Producteurs', d.producteurs], ['Diagnostics (30 j)', d.diagnostics], ['Alertes élevées', d.alertes], ['Volume groupé (T)', d.volume_t], ['Offres ouvertes', d.offres]];
+  const mc = Math.max(1, ...d.par_culture.map(x => x.n)), mm = Math.max(1, ...d.top_maladies.map(x => x.n)), md = Math.max(1, ...d.par_jour.map(x => x.n));
+  const Row = (l, n, m) => html`<div key=${l} class="mb-2"><div class="flex justify-between text-sm"><span class="capitalize">${l}</span><b>${n}</b></div><div class="h-2.5 bg-slate-100 rounded-full"><div class="h-2.5 bg-teal-600 rounded-full" style=${{ width: (n / m * 100) + '%' }}></div></div></div>`;
+  return html`<div class="max-w-5xl mx-auto px-4 py-8"><${Title} t="Tableau de bord national" s="Indicateurs calculés à partir des diagnostics de démonstration." />
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3">${K.map(([l, v]) => html`<div key=${l} class=${CARD}><p class="text-xs text-slate-500">${l}</p><p class=${'text-3xl font-bold ' + (l.startsWith('Alertes') && v ? 'text-red-600' : 'text-teal-800')}>${v}</p></div>`)}</div>
+    <div class="grid md:grid-cols-2 gap-4 mt-4"><div class=${CARD}><h3 class="font-semibold mb-3">Diagnostics par culture</h3>${d.par_culture.map(x => Row(x.culture, x.n, mc))}</div>
+    <div class=${CARD}><h3 class="font-semibold mb-3">Maladies les plus détectées</h3>${d.top_maladies.map(x => Row(x.label, x.n, mm))}</div></div>
+    <div class=${CARD + ' mt-4'}><h3 class="font-semibold mb-3">Diagnostics par jour</h3><div class="flex items-end gap-2 h-40">${d.par_jour.map(x => html`<div key=${x.d} class="flex-1 flex flex-col items-center justify-end h-full"><span class="text-xs mb-1">${x.n}</span><div class="w-full bg-teal-600 rounded-t" style=${{ height: (x.n / md * 100) + '%' }}></div><span class="text-[10px] text-slate-500 mt-1">${x.d.slice(8, 10)}/${x.d.slice(5, 7)}</span></div>`)}</div></div></div>`;
+}
+
+function App() {
+  const [user, setUser] = useState(() => { try { return JSON.parse(localStorage.getItem('u')); } catch (e) { return null; } });
+  const [view, setView] = useState('home');
+  const go = v => { setView(v); window.scrollTo(0, 0); };
+  const logout = silent => { if (silent !== true && TOKEN) api('/auth/logout', { method: 'POST' }).catch(() => {}); TOKEN = null; localStorage.removeItem('t'); localStorage.removeItem('u'); setUser(null); setView('home'); };
+  useEffect(() => { if (TOKEN) api('/auth/me').then(j => setUser(j.user)).catch(() => logout(true)); }, []);
+  const onAuth = j => { TOKEN = j.token; localStorage.setItem('t', j.token); localStorage.setItem('u', JSON.stringify(j.user)); setUser(j.user); setView(j.user.role === 'admin' ? 'dash' : 'diag'); };
+  const V = { home: Home, diag: Diag, weather: Weather, map: MapView, roi: Roi, market: Market, logis: Logis };
+  let page;
+  if (view === 'login' && !user) page = html`<${Auth} onAuth=${onAuth} />`;
+  else if (view === 'dash') page = user && user.role === 'admin' ? html`<${Dash} />` : html`<${Need} go=${go} />`;
+  else { const C = V[view] || Home; page = html`<${C} user=${user} go=${go} />`; }
+  return html`<div class="min-h-screen"><${Nav} user=${user} view=${view} go=${go} logout=${() => logout()} />${page}</div>`;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App} />`);
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+</script>
+</body>
+</html>
